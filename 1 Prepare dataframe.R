@@ -116,8 +116,8 @@ df$date <- date
 
 # 4. Merge with CMP codebook to get country and party names
 
-# import codebook
-manif.codebook <- read_excel("Penn State/Tech-induced job loss/documents_MPDataset_MPDS2020a.xlsx")
+# import reference sheet
+manif.codebook <- read_excel("Penn State/Tech-induced job loss/manifestos_reference_sheet.xlsx")
 
 # merge by party ID and date, dropping manifs not in our dataset
 df <- merge(df, manif.codebook, by = c("party","date"), all.y = F)
