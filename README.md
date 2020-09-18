@@ -1,5 +1,10 @@
 # Manifestos-and-Tech
 Code and documents relating to project on manifestos, technology, and tech-induced job loss
 
-9-14-20
-Currently, the only file is the R script for creating our first coding sample. It shows the reader how I downloaded the manifesto texts from the Comparative Manifestos Project, narrowed the corpus down to English-language entries, identified sentences with keywords, and drew two samples for manual coding.
+# Directory
+
+manifesto_data.RData - Dataframe with sentence text, unique IDs, party, date, and country. Does not include keyword counts.
+manifestos_reference_sheet.xlsx - Spreadsheet of all CMP documents with party, data, and country. (Our project only includes the 10% published in English.)
+
+1 Prepare dataframe.R - Script for downloading manifestos from CMP API, converting them to dataframe, assigning IDs, and importing metadata
+2 Draw first sample for hand-coding.R - Script for counting keywords and drawing sample for hand-coding
