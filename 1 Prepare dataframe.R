@@ -8,9 +8,12 @@
 
 # 0. Load packages
 install.packages("https://cran.r-project.org/src/contrib/Archive/manifestoR/manifestoR_1.3.0.tar.gz", repos = NULL)
+install.packages("sentimentr")
 library(manifestoR)
 library(tokenizers)
 library(stringr)
+library(readxl)
+library(sentimentr)
 
 #####
 
@@ -40,7 +43,7 @@ rm(corpus) # remove others
 
 #####
 
-# 2. Clean the data and count keywords
+# 2. Clean the data
 
 # a. Concatenate CMP quasi-sentences to create one long text for each manifesto
 
@@ -55,6 +58,11 @@ for (i in 1:length(english_corpus)){
 for (i in 1:length(english_corpus)){
   english_corpus[[i]]$content <- unlist(tokenize_sentences(english_corpus[[i]]$content))
 }
+
+# c. Count words in sentences, keep sents of 5 words or more
+
+df$length <- sapply(strsplit(df$text, " "), length)
+df <- df[df$length>=5,]
 
 #####
 
@@ -116,8 +124,8 @@ df$date <- date
 
 # 4. Merge with CMP codebook to get country and party names
 
-# import reference sheet
-manif.codebook <- read_excel("Penn State/Tech-induced job loss/manifestos_reference_sheet.xlsx")
+# import codebook
+manif.codebook <- read_excel("Penn State/Tech-induced job loss/documents_MPDataset_MPDS2020a.xlsx")
 
 # merge by party ID and date, dropping manifs not in our dataset
 df <- merge(df, manif.codebook, by = c("party","date"), all.y = F)
@@ -126,5 +134,39 @@ df <- merge(df, manif.codebook, by = c("party","date"), all.y = F)
 dups <- duplicated(df$id)
 df <- df[dups==F,]
 
-# save dataframe
+# create year-party-country names
+df$manifesto <- paste(df$partyname,df$countryname,df$date,sep = "-")
+
+
+#####
+
+# 5. Add initial keywords and sentiment as text features
+
+# initial keywords (remove asterisks for colnames)
+keywords <- c("comput*","automate","automation","robot*","digital","artificial intelligence","data","programmer",
+"algorithm","high tech","internet","information technology","voice recog*","software","machine learning")
+
+keyword_names <- c("comput","automate","automation","robot","digital","artificialintelligence","data","programmer",
+              "algorithm","hightech","internet","informationtechnology","voicerecog","software","machinelearning")
+
+# assign a column to each
+df[,10:24] <- 0
+names(df)[10:24] <- keyword_names
+
+# count number of instances in each sentence
+for (i in 1:length(keywords)){
+  df[,keywords[i]] <- str_count(df$text, regex(keywords[i],ignore.case = T))
+}
+
+# count total number of keywords per sentence
+df$keyword_count <- rowSums(df[,10:24])
+
+# calculate sentiment by sentence
+sentiment <- sentiment(get_sentences(df$text)) # sentimentR reqs get_sentences, which breaks them up differently than tokenizer
+temp <- aggregate(sentiment$sentiment, by = list(sentiment$element_id), FUN = mean) # change back to vector of df length
+df$sentiment <- temp$x
+
+#####
+
+# 6. Save dataframe
 save(df, file="~/Penn State/Tech-induced job loss/manifesto_data.RData")
