@@ -3,12 +3,13 @@
 #
 # Part 1 - Preparing manifesto dataframe
 #
-# Last updated by Seth Warner, 9-18-20
+# Last updated by Seth Warner, 10-12-20
 ########################
 
 # 0. Load packages
 install.packages("https://cran.r-project.org/src/contrib/Archive/manifestoR/manifestoR_1.3.0.tar.gz", repos = NULL)
 install.packages("sentimentr")
+install.packages("stringr")
 library(manifestoR)
 library(tokenizers)
 library(stringr)
@@ -146,20 +147,27 @@ df$manifesto <- paste(df$partyname,df$countryname,df$date,sep = "-")
 keywords <- c("comput*","automate","automation","robot*","digital","artificial intelligence","data","programmer",
 "algorithm","high tech","internet","information technology","voice recog*","software","machine learning")
 
-keyword_names <- c("comput","automate","automation","robot","digital","artificialintelligence","data","programmer",
-              "algorithm","hightech","internet","informationtechnology","voicerecog","software","machinelearning")
+keyword_names <- c("comput_1","automate_1","automation_1","robot_1","digital_1","artificialintelligence_1","data_1","programmer_1",
+              "algorithm_1","hightech_1","internet_1","informationtechnology_1","voicerecog_1","software_1","machinelearning_1")
+
+keyword_names_0 <- c("comput_0","automate_0","automation_0","robot_0","digital_0","artificialintelligence_0","data_0","programmer_0",
+                   "algorithm_0","hightech_0","internet_0","informationtechnology_0","voicerecog_0","software_0","machinelearning_0")
 
 # assign a column to each
 df[,10:24] <- 0
 names(df)[10:24] <- keyword_names
 
+df[,25:39] <- 0
+names(df)[25:39] <- keyword_names_0
+
 # count number of instances in each sentence
 for (i in 1:length(keywords)){
-  df[,keywords[i]] <- str_count(df$text, regex(keywords[i],ignore.case = T))
+  df[,keyword_names[i]] <- ifelse(str_count(df$text, regex(keywords[i],ignore.case = T))>=1, 1, 0)
+  df[,keyword_names_0[i]] <- ifelse(str_count(df$text, regex(keywords[i],ignore.case = T))>=1, 0, 1)
 }
 
 # count total number of keywords per sentence
-df$keyword_count <- rowSums(df[,10:24])
+df$keyword_count <- rowSums(df[,keyword_names])
 
 # calculate sentiment by sentence
 sentiment <- sentiment(get_sentences(df$text)) # sentimentR reqs get_sentences, which breaks them up differently than tokenizer
