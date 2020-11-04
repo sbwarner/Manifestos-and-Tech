@@ -3,105 +3,118 @@
 #
 # Part 3 - Active learning and iterative sampling
 #
-# Last updated by Seth Warner, 10-12-20
+# Last updated by Seth Warner, 11-4-20
 ########################
 
+library(doParallel)
 library(randomForest)
 library(mltest)
 library(dplyr)
 library(tidyr)
 library(reshape2)
+library(readxl)
 
+
+#####
+# 0. Load and merge data
 load("~/Penn State/Tech-induced job loss/manifesto_data.RData")
+coded_sample <- read_xlsx("~/Penn State/Tech-induced job loss/coded_sample.xlsx")
 
-#####
-# 0. Prepare test data
-# (SKIP to next section if working with real data)
+training <- merge(df, coded_sample, by = "id")
+training$handcode <- factor(training$handcode)
 
-set.seed(1969) # go mets
-
-# draw random samples
-temp <- sample(row(df), replace = F, 30)  # simple random sample
-random_sample <- df[temp, c("id","text")]
-
-temp <- sample(row(df[df$keyword_count>=1,]), replace = F, 30) # sample of sents with 1+ keyword
-keyword_sample <- df[df$keyword_count>=1,][temp, c("id","text")]
-
-# assign fake codes
-random_sample$handcode <- sample(c("nontech","techneg","techneutral","techpos"), 30, replace = T, prob = c(.97,.01,.01,.01))
-keyword_sample$handcode <- sample(c("nontech","techneg","techneutral","techpos"), 30, replace = T, prob = c(.2,.2,.3,.3))
-
-# merge
-sample <- rbind(random_sample, keyword_sample)
-sample <- sample[!duplicated(sample$id),]
-rm(keyword_sample,random_sample)
 
 
 #####
-# 1. Combine hand-coded sentences with text features
-training <- merge(df, sample[,c("id","handcode")],
-                  by = "id") 
-training$handcode <- factor(training$handcode) # set as factor for random forest
+# 1. Determine best random forest specifications
 
-
-#####
-# 2. Create random forest model and run diagnostics
-
-# Create different combos of specifications for RF
+# Try all combos of following values for number of trees, vars-per-split, and nodesize
 trees <- c(10,50,100,250,500,1000)
 mtry <- c(5,8,11,14,17,19)
 nodesize <- c(1,2,3,4,5,6)
 specs <- expand.grid(trees, mtry, nodesize)
 names(specs) <- c("trees","mtry","nodesize")
 
-# Prepare elements to contain diags for each specification
+# Create empty vectors to collect out-of-bag error and balanced accuracy for each forest
 oob_err <- rep(0,nrow(specs))
 bal_acc <- matrix(nrow = nrow(specs), ncol = 4)
 
+# Name ind variables for RF to use (some text features already in data environment)
 other_features <- c("date","length","sentiment","keyword_count")
 
-# Loop with random forests
-for (i in 1:nrow(specs)){
-  
-set.seed(1986) # Each RF begins in same place
-rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, keyword_names, keyword_names_0)], 
-                   ntree = specs$trees[i], mtry = specs$mtry[i], nodesize = specs$nodesize[i])
-diags <- ml_test(rf$predicted,training$handcode)
+# Prepare parallelizer to use all available CPU cores
+numCores <- detectCores()
+registerDoParallel(numCores)
 
-oob_err[i] <- mean(rf$err.rate[,1])
-bal_acc[i,1:4] <- diags$balanced.accuracy
+# Random forest collects the OOB Error * Balanced Accuracy for each specification
+set.seed(1992)
+BA_X_ooberr <- 
+  foreach(i=1:nrow(specs), .combine=rbind, .packages=c('randomForest','mltest')) %dopar%{
+rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, keyword_names, keyword_names_0)], 
+                     ntree = specs$trees[i], mtry = specs$mtry[i], nodesize = specs$nodesize[i])
+diags <- ml_test(rf$predicted,training$handcode)
+  
+  oob_err[i] <- mean(rf$err.rate[,"OOB"])
+  bal_acc[i,1:4] <- diags$balanced.accuracy
+  -1 * oob_err[i] * mean(bal_acc[i,1:4]) # multiply OOB error by -1 so higher values are better
 }
 
-# Combine specifications with diagnostic metrics
-diagnostics <- cbind(specs,oob_err,bal_acc)
-names(diagnostics)[5:8] <- c("nontech_BA", "techneg_BA", "techneutral_BA", "techpos_BA")
-diagnostics$mean_BA <- (diagnostics$nontech_BA + diagnostics$techneg_BA + diagnostics$techneutral_BA + diagnostics$techpos_BA) / 4
+# Select specifications with best accuracy / lowest error
+diagnostics <- cbind(specs, BA_X_ooberr)
+diagnostics <- diagnostics[order(-diagnostics$BA_X_ooberr),]
+specs <- diagnostics[1,c("trees","mtry","nodesize")]
 
-# Create combined metric: mean Balanced Accuracy X OOB error (* -1 so higher values are better)
-diagnostics$BA_X_ooberr <- diagnostics$mean_BA * -1*diagnostics$oob_err
 
-# Simple OLS identifies specifications associated with best performance
-summary(lm(BA_X_ooberr ~ factor(trees) + factor(mtry) + factor(nodesize), data = diagnostics))
+
+#####
+# 2. Study improvement in OOB as more sentences are coded
+
+# Sort by date_coded, first to last
+training$date_coded <- as.Date(training$date_coded)
+training <- training[order(training$date_coded),]
+
+# Prepare to run 20 RFs on first 50 sentences, then 100, ... until total coded reached
+upto <- rep(c(50,59), 20) # manually specify intervals of 50 until total
+upto <- upto[order(upto)]
+
+# Prepare separate seed for each RF run
+set.seed(75)
+seeds <- sample(1:length(upto),length(upto))
+
+# Run 20 RFs for each set of 50 sentences, cumulative
+oob_err <- foreach(i=1:length(upto), .combine=rbind, .packages=c('randomForest','mltest')) %dopar%{
+  set.seed(seeds[i])
+  rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, keyword_names, keyword_names_0)], 
+                     ntree = specs$trees, mtry = specs$mtry, nodesize = specs$nodesize)
+  mean(rf$err.rate[,"OOB"])
+}
+
+# Put OOB errors into dataframe
+median_error <- as.data.frame(cbind(upto,oob_err))
+median_error$upto <- factor(median_error$upto)
+
+# Plot OOB error distribution by number of sentences used
+boxplot(V2~upto, data = median_error)
+
+
+
+#### 3. Create predicted values for each sentence
 
 # Run RF with best specifications
 set.seed(2010)
 rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, keyword_names, keyword_names_0)], 
-      ntree = 1000, mtry = 5, nodesize = 5)
+      ntree = specs$trees, mtry = specs$mtry, nodesize = specs$nodesize)
 
 # Record OOB error and balanced accuracy
 rf
 ml_test(rf$predicted, training$handcode)
 
-
-#####
-# 3. Create predicted values for all sentences
+# Predict out-of-sample values
 preds <- predict(rf, df, type = "prob") # "prob" returns pr(nontech), pr(techneg), etc. in matrix form
 preds <- as.data.frame(preds)
 
-#for later rounds of coding, create separate varnames
-#names(preds) <- c("nontech2","techneg2","techneutral2","techpos2") 
-
-df <- cbind(df,preds) # combine matrix with df
+# Combine predictions with df
+df <- cbind(df,preds)
 
 
 #####
@@ -139,6 +152,7 @@ df$techneutral[df$techneutral==0] <- 0.0001
 df$techpos[df$techpos==0] <- 0.0001
 df$nontech[df$nontech==0] <- 0.0001
 
+# Prepare empty vector for calculation
 entropy <- rep(0,nrow(df))
 
 # Calculate entropy for each sentence
@@ -147,32 +161,48 @@ for (i in 1:nrow(df)){
   entropy[i] <- shannon(temp)
 }
 
+# Merge Shannon entropy into dataframe
 df$entropy <- entropy
 
 
 #####
-# 6. Select next round of hand-coding
+# 6. Select sample for coding based on uncertainty (high entropy)
 
-# Select some based on high uncertainty
+# Select specified number based on highest entropy
 sorted <- df[order(-df$entropy),]
-entropy_sample <- sorted[1:52,]
+entropy_sample <- sorted[1:52,] # set number manually
 entropy_sample <- entropy_sample[,c("id","text")]
 
-# Select some at random from manifs that have not yet been coded
-training$code_round <- 1 #to vary with each round
 
-df <- merge(df, training[,c("id","code_round")], by = "id", all.x = T) 
-df$handcoded <- ifelse(complete.cases(df$code_round),1,0) # indicate whether sentence has ever been coded
+#####
+# 7. Select sample for coding based on manifesto undercoverage
 
+# Merge df with training sample to ID sentences that have been coded
+df <- merge(df, training[,c("id","date_coded")], by = "id", all.x = T) 
+df$handcoded <- ifelse(complete.cases(df$date_coded),1,0) # indicate whether sentence has ever been coded, assign tiny value if not...
+
+# Count the number handcoded for each manifesto
 manifcounts <- aggregate(df$handcoded, by = list(df$manifesto), FUN = sum) # count handcodes per manif
-names(manifcounts) <- c("manifesto","manif_sents_handcoded")
-manifcounts$manif_sents_handcoded[manifcounts$manif_sents_handcoded==0] <- 0.001 # assign tiny value to manifs w/ 0 codes...
-df <- merge(df, manifcounts, by = "manifesto", all.x = T) 
+names(manifcounts) <- c("manifesto","sents_handcoded")
 
+# Order manifestos (ascending) by number coded, use random draw to break ties
+manifcounts$rand <- rnorm(nrow(manifcounts)) # set random draw
+manifcounts <- manifcounts[order(manifcounts[,"sents_handcoded"], -manifcounts[,"rand"] ),] # order by sentences coded, then random draw
+
+# Select sentences at random from 4 least-coded manifestos
 set.seed(2010)
-coverage_sample <- sample_n(df, 8, prob = (1/(df$manif_sents_handcoded))) #...so we can inverse them and take a weighted prob sample from undercoded manifs
+coverage_sample_1 <- sample_n(df[df$manifesto==manifcounts$manifesto[1]], 2) # set number manually
+coverage_sample_2 <- sample_n(df[df$manifesto==manifcounts$manifesto[2]], 2)
+coverage_sample_3 <- sample_n(df[df$manifesto==manifcounts$manifesto[3]], 2)
+coverage_sample_4 <- sample_n(df[df$manifesto==manifcounts$manifesto[4]], 2)
+
+# Combine sentences
+coverage_sample <- rbind(coverage_sample_1,coverage_sample_2,coverage_sample_3,coverage_sample_4)
 coverage_sample <- coverage_sample[,c("id","text")]
 
-# Combine into one sample
+
+#####
+# 8. Combine uncertainty and undercoverage-based samples into one... export
 new_sample <- rbind(entropy_sample, coverage_sample)
+new_sample <- new_sample[-duplicated(new_sample$id),]
 write.csv(new_sample,file="~/Penn State/Tech-induced job loss/coding_sampleXXX.csv")
