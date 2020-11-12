@@ -3,7 +3,7 @@
 #
 # Part 3 - Active learning and iterative sampling
 #
-# Last updated by Seth Warner, 11-4-20
+# Last updated by Seth Warner, 11-11-20
 ########################
 
 library(doParallel)
@@ -13,6 +13,7 @@ library(dplyr)
 library(tidyr)
 library(reshape2)
 library(readxl)
+
 
 
 #####
@@ -50,8 +51,9 @@ registerDoParallel(numCores)
 set.seed(1992)
 BA_X_ooberr <- 
   foreach(i=1:nrow(specs), .combine=rbind, .packages=c('randomForest','mltest')) %dopar%{
-rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, keyword_names, keyword_names_0)], 
-                     ntree = specs$trees[i], mtry = specs$mtry[i], nodesize = specs$nodesize[i])
+rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, party_data, keyword_names, keyword_names_0)], 
+                     ntree = specs$trees[i], mtry = specs$mtry[i], nodesize = specs$nodesize[i],
+                   na.action = na.roughfix, mfixrep = 5, missfill = 2)
 diags <- ml_test(rf$predicted,training$handcode)
   
   oob_err[i] <- mean(rf$err.rate[,"OOB"])
@@ -67,7 +69,7 @@ specs <- diagnostics[1,c("trees","mtry","nodesize")]
 
 
 #####
-# 2. Study improvement in OOB as more sentences are coded
+# 2. Study improvement in OOB / stability in resulting metrics as more sentences are coded
 
 # Sort by date_coded, first to last
 training$date_coded <- as.Date(training$date_coded)
@@ -82,19 +84,36 @@ set.seed(75)
 seeds <- sample(1:length(upto),length(upto))
 
 # Run 20 RFs for each set of 50 sentences, cumulative
-oob_err <- foreach(i=1:length(upto), .combine=rbind, .packages=c('randomForest','mltest')) %dopar%{
+# CAUTION: TAKES 10 OR MORE MINUTES TO RUN
+results <- foreach(i=1:length(upto), .combine=rbind, .packages=c('randomForest','mltest')) %dopar%{
   set.seed(seeds[i])
-  rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, keyword_names, keyword_names_0)], 
-                     ntree = specs$trees, mtry = specs$mtry, nodesize = specs$nodesize)
-  mean(rf$err.rate[,"OOB"])
+  rows <- sample(1:nrow(training),upto[i])
+  rf <- randomForest(handcode ~ ., data = training[rows,c("handcode",other_features, keyword_names, keyword_names_0)], 
+                     ntree = specs$trees, mtry = specs$mtry, nodesize = specs$nodesize,
+                     na.action = na.roughfix, mfixrep = 5, missfill = 2)
+  oob <- mean(rf$err.rate[,"OOB"])
+  preds <- predict(rf, df, type = "prob")
+  preds <- as.data.frame(preds)
+  names(preds) <- c("nontech","techneg","techneutral","techpos")
+  tech_sents <- sum(preds$techneg + preds$techneutral + preds$techpos)
+  salience <- tech_sents / (tech_sents + sum(preds$nontech))
+  valence <- (sum(preds$techpos) + -1*sum(preds$techneg)) / tech_sents
+  
+  rm(preds)
+  c(oob, tech_sents, salience, valence)
 }
 
-# Put OOB errors into dataframe
-median_error <- as.data.frame(cbind(upto,oob_err))
-median_error$upto <- factor(median_error$upto)
 
-# Plot OOB error distribution by number of sentences used
-boxplot(V2~upto, data = median_error)
+# Put errors and result stats into dataframe
+results <- as.data.frame(cbind(upto,results))
+names(results) <- c("upto","oob","tech_sentences","salience","valence")
+mean_error$upto <- factor(median_error$upto)
+
+# Plot OOB error and results distributions by number of sentences used
+boxplot(oob~upto, data = mean_error)
+boxplot(tech_sentences~upto, data = mean_error)
+boxplot(salience~upto, data = mean_error)
+boxplot(valence~upto, data = mean_error)
 
 
 
@@ -103,7 +122,8 @@ boxplot(V2~upto, data = median_error)
 # Run RF with best specifications
 set.seed(2010)
 rf <- randomForest(handcode ~ ., data = training[,c("handcode",other_features, keyword_names, keyword_names_0)], 
-      ntree = specs$trees, mtry = specs$mtry, nodesize = specs$nodesize)
+      ntree = specs$trees, mtry = specs$mtry, nodesize = specs$nodesize,
+      na.action = na.roughfix, mfixrep = 5, missfill = 2)
 
 # Record OOB error and balanced accuracy
 rf

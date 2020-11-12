@@ -3,13 +3,15 @@
 #
 # Part 1 - Preparing manifesto dataframe
 #
-# Last updated by Seth Warner, 10-12-20
+# Last updated by Seth Warner, 11-11-20
 ########################
 
 # 0. Load packages
 install.packages("https://cran.r-project.org/src/contrib/Archive/manifestoR/manifestoR_1.3.0.tar.gz", repos = NULL)
 install.packages("sentimentr")
 install.packages("stringr")
+install.packages("tokenizers")
+install.packages("readxl")
 library(manifestoR)
 library(tokenizers)
 library(stringr)
@@ -141,10 +143,11 @@ df$manifesto <- paste(df$partyname,df$countryname,df$date,sep = "-")
 
 #####
 
-# 5. Add initial keywords and sentiment as text features
+# 5. Add initial keywords, party data, and sentiment as text features
 
-# initial keywords (remove asterisks for colnames)
-keywords <- c("comput*","automate","automation","robot*","digital","artificial intelligence","data","programmer",
+###
+# a. Idenitfy keywords (remove asterisks for colnames)
+keywords <- c("computer|computatational|computerize","automate","automation","robot*","digital","artificial intelligence","data","programmer",
 "algorithm","high tech","internet","information technology","voice recog*","software","machine learning")
 
 keyword_names <- c("comput_1","automate_1","automation_1","robot_1","digital_1","artificialintelligence_1","data_1","programmer_1",
@@ -153,7 +156,7 @@ keyword_names <- c("comput_1","automate_1","automation_1","robot_1","digital_1",
 keyword_names_0 <- c("comput_0","automate_0","automation_0","robot_0","digital_0","artificialintelligence_0","data_0","programmer_0",
                    "algorithm_0","hightech_0","internet_0","informationtechnology_0","voicerecog_0","software_0","machinelearning_0")
 
-# assign a column to each
+# create column for each keyword
 df[,10:24] <- 0
 names(df)[10:24] <- keyword_names
 
@@ -169,10 +172,39 @@ for (i in 1:length(keywords)){
 # count total number of keywords per sentence
 df$keyword_count <- rowSums(df[,keyword_names])
 
-# calculate sentiment by sentence
+
+###
+# b. merge in V-Dem party data
+
+# import data and crosswalk
+vdem <- read.csv("~/Penn State/Tech-induced job loss/CPD_V-Party_CSV_v1/V-Dem-CPD-Party-V1.csv")
+crosswalk <- read.csv("~/Penn State/Tech-induced job loss/vdem_crosswalk.csv")
+
+# use party_state to match to V-DEM party codes
+df$party_state <- paste(df$partyname,df$countryname,sep = ", ")
+df <- merge(df,crosswalk, by = "party_state", all.x = T)
+
+# create party-year codes to align data temporally
+df$year <- as.integer(substr(df$date, start = 1, stop = 4))
+df$party_year <- paste(df$v2paid, df$year, sep = "-")
+vdem$party_year <- paste(vdem$v2paid, vdem$year, sep = "-")
+
+# specify variables of interest
+party_data <- c("v2paanteli","v2papeople","v2paopresp","v2paplur","v2paminor","v2paviol",
+                "v2paimmig","v2palgbt","v2paculsup","v2parelig","v2pagender","v2pawomlab",
+                "v2pariglef","v2pawelf","v2paclient")
+
+# merge V-DEM variables into dataframe
+df <- merge(df,vdem[,party_data], by = "party_year", all.x = T)
+
+
+###
+# c. calculate sentiment by sentence
+
 sentiment <- sentiment(get_sentences(df$text)) # sentimentR reqs get_sentences, which breaks them up differently than tokenizer
 temp <- aggregate(sentiment$sentiment, by = list(sentiment$element_id), FUN = mean) # change back to vector of df length
 df$sentiment <- temp$x
+
 
 #####
 
