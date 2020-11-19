@@ -3,7 +3,7 @@
 #
 # Part 3 - Active learning and iterative sampling
 #
-# Last updated by Seth Warner, 11-11-20
+# Last updated by Seth Warner, 11-19-20
 ########################
 
 library(doParallel)
@@ -17,11 +17,15 @@ library(readxl)
 
 
 #####
-# 0. Load and merge data
-load("~/Penn State/Tech-induced job loss/manifesto_data.RData")
-coded_sample <- read_xlsx("~/Penn State/Tech-induced job loss/coded_sample.xlsx")
+setwd("~/Penn State/Tech-induced job loss")
+# setwd("/Users/th5/Downloads/Manifestos-and-Tech-master")
 
-training <- merge(df, coded_sample, by = "id")
+
+# 0. Load and merge data
+load("manifesto_data.RData")
+coded_sample <- read_xlsx("test_coded_sample.xlsx")
+
+training <- merge(df, test_coded_sample, by = "id")
 training$handcode <- factor(training$handcode)
 
 
@@ -225,4 +229,4 @@ coverage_sample <- coverage_sample[,c("id","text")]
 # 8. Combine uncertainty and undercoverage-based samples into one... export
 new_sample <- rbind(entropy_sample, coverage_sample)
 new_sample <- new_sample[-duplicated(new_sample$id),]
-write.csv(new_sample,file="~/Penn State/Tech-induced job loss/coding_sampleXXX.csv")
+write.csv(new_sample,file="~coding_sampleXXX.csv")
