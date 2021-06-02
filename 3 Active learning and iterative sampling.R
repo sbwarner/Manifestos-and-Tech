@@ -3,9 +3,15 @@
 #
 # Part 3 - Active learning and iterative sampling
 #
-# Last updated by Seth Warner, 11-19-20
+# Last updated: Toby, 5-27-2021
 ########################
 
+
+rm(list=ls())
+
+
+
+library(plyr)
 library(doParallel)
 library(randomForest)
 library(mltest)
@@ -13,19 +19,19 @@ library(dplyr)
 library(tidyr)
 library(reshape2)
 library(readxl)
-
+library(ggplot2)
 
 
 #####
-setwd("~/Penn State/Tech-induced job loss")
-# setwd("/Users/th5/Downloads/Manifestos-and-Tech-master")
+setwd("C:/Users/sethb/OneDrive/Penn State/Tech-induced job loss")
+ setwd("/Users/th5/Downloads/Manifestos-and-Tech-master")
 
 
 # 0. Load and merge data
 load("manifesto_data.RData")
 coded_sample <- read_xlsx("test_coded_sample.xlsx")
 
-training <- merge(df, test_coded_sample, by = "id")
+training <- merge(df, coded_sample, by = "id")
 training$handcode <- factor(training$handcode)
 
 
@@ -39,6 +45,10 @@ mtry <- c(5,8,11,14,17,19)
 nodesize <- c(1,2,3,4,5,6)
 specs <- expand.grid(trees, mtry, nodesize)
 names(specs) <- c("trees","mtry","nodesize")
+
+#specs <- specs[sample(1:nrow(specs), size=4),]
+
+
 
 # Create empty vectors to collect out-of-bag error and balanced accuracy for each forest
 oob_err <- rep(0,nrow(specs))
@@ -78,46 +88,75 @@ specs <- diagnostics[1,c("trees","mtry","nodesize")]
 # Sort by date_coded, first to last
 training$date_coded <- as.Date(training$date_coded)
 training <- training[order(training$date_coded),]
+training$order <- 1:nrow(training)
 
-# Prepare to run 20 RFs on first 50 sentences, then 100, ... until total coded reached
-upto <- rep(c(50,59), 20) # manually specify intervals of 50 until total
-upto <- upto[order(upto)]
+# Prepare to run RFs
+upto <- c(seq(from=50, to=nrow(training), by=3), nrow(training))
+upto <- unique(upto)
+n_upto <- length(upto)
 
 # Prepare separate seed for each RF run
 set.seed(75)
-seeds <- sample(1:length(upto),length(upto))
+
+
+get_summ <- function(x, ...)
+{
+  tech_sents <- sum(x$techneg + x$techneutral + x$techpos)
+  salience <- tech_sents / nrow(x)
+  valence <- (sum(x$techpos) - sum(x$techneg)) / tech_sents
+  
+  return(data.frame(Valence=valence, Salience=salience))
+}
 
 # Run 20 RFs for each set of 50 sentences, cumulative
 # CAUTION: TAKES 10 OR MORE MINUTES TO RUN
-results <- foreach(i=1:length(upto), .combine=rbind, .packages=c('randomForest','mltest')) %dopar%{
-  set.seed(seeds[i])
-  rows <- sample(1:nrow(training),upto[i])
-  rf <- randomForest(handcode ~ ., data = training[rows,c("handcode",other_features, keyword_names, keyword_names_0)], 
+results <- foreach(i=1:n_upto, .packages=c('randomForest','mltest')) %dopar%{
+  rows <- which(training$order <= upto[i])
+  rf <- randomForest(handcode ~ ., data = training[rows, c("handcode",other_features, keyword_names, keyword_names_0)], 
                      ntree = specs$trees, mtry = specs$mtry, nodesize = specs$nodesize,
                      na.action = na.roughfix, mfixrep = 5, missfill = 2)
   oob <- mean(rf$err.rate[,"OOB"])
   preds <- predict(rf, df, type = "prob")
   preds <- as.data.frame(preds)
   names(preds) <- c("nontech","techneg","techneutral","techpos")
-  tech_sents <- sum(preds$techneg + preds$techneutral + preds$techpos)
-  salience <- tech_sents / (tech_sents + sum(preds$nontech))
-  valence <- (sum(preds$techpos) + -1*sum(preds$techneg)) / tech_sents
+
+  ## Summarize
+  preds$manifesto <- df$manifesto
+  summ_manifesto <- ddply(.data=preds, .variables="manifesto", .fun=function(x) get_summ(x=x))
+  summ_manifesto$batch <- upto[i]
   
-  rm(preds)
-  c(oob, tech_sents, salience, valence)
+  return(list(oob=oob, summ_manifesto=summ_manifesto))
 }
 
 
-# Put errors and result stats into dataframe
-results <- as.data.frame(cbind(upto,results))
-names(results) <- c("upto","oob","tech_sentences","salience","valence")
-mean_error$upto <- factor(median_error$upto)
+## Plot estimates by manifesto
+res_manifesto <- ldply(.data=results, .fun=function(x) x$summ_manifesto)
+res_manifesto <- melt(res_manifesto, id.vars=c("manifesto", "batch"))
+translate <- data.frame(batch_lag=upto[-1], batch=upto[-length(upto)])
+res_manifesto_lag <- merge(res_manifesto, translate, by="batch", all.x=TRUE)
+res_manifesto_lag$batch <- NULL
+res_manifesto_lag$batch <- res_manifesto_lag$batch_lag
+res_manifesto_lag$batch_lag <- NULL
+res_manifesto_lag <- na.omit(res_manifesto_lag)
+colnames(res_manifesto_lag)[which(colnames(res_manifesto_lag) == "value")] <- "value_Lag"
+res_manifesto <- merge(res_manifesto, res_manifesto_lag, by=c("batch", "manifesto", "variable"))
+res_manifesto$Diff <- res_manifesto$value - res_manifesto_lag$value_Lag
+res_manifesto <- na.omit(res_manifesto)
 
-# Plot OOB error and results distributions by number of sentences used
-boxplot(oob~upto, data = mean_error)
-boxplot(tech_sentences~upto, data = mean_error)
-boxplot(salience~upto, data = mean_error)
-boxplot(valence~upto, data = mean_error)
+g <- ggplot(data=res_manifesto, aes(x=batch, y=Diff, group=manifesto))
+g <- g + geom_line(size=0.2) + facet_wrap(~ variable, ncol=2, scales="free_y")
+g <- g + theme_minimal()
+g <- g + xlab("Number of coded observations") + ylab("Change to previous batch")
+
+
+
+## Errors
+res_errors <- ldply(.data=results, .fun=function(x) x$oob)
+res_errors <- data.frame(oob=res_errors$V1, batch=upto)
+
+g <- ggplot(data=res_errors, aes(x=batch, y=oob))
+g <- g + geom_line(size=1)
+g
 
 
 
@@ -137,14 +176,18 @@ ml_test(rf$predicted, training$handcode)
 preds <- predict(rf, df, type = "prob") # "prob" returns pr(nontech), pr(techneg), etc. in matrix form
 preds <- as.data.frame(preds)
 
+category_names <- c("nontech","techneg","techneutral","techpos")
+colnames(preds) <- category_names
+
+
+
 # Combine predictions with df
-df <- cbind(df,preds)
+df <- cbind(df, preds)
 
 
 #####
 # 4. Calculate preliminary results
 
-category_names <- c("nontech","techneg","techneutral","techpos")
 results <- aggregate(df[,category_names], by = list(df$manifesto), FUN = sum) # "sum" adds probs to estimate predicted number of sentences per type in each manif
 
 results$tech_sentences <- results$techneg + results$techneutral + results$techpos # total estimated tech-relevant sentences
@@ -176,14 +219,9 @@ df$techneutral[df$techneutral==0] <- 0.0001
 df$techpos[df$techpos==0] <- 0.0001
 df$nontech[df$nontech==0] <- 0.0001
 
-# Prepare empty vector for calculation
-entropy <- rep(0,nrow(df))
-
 # Calculate entropy for each sentence
-for (i in 1:nrow(df)){
-  temp <- df[i,category_names]
-  entropy[i] <- shannon(temp)
-}
+entropy <- apply(df[,category_names], 1, shannon)
+
 
 # Merge Shannon entropy into dataframe
 df$entropy <- entropy
@@ -195,7 +233,7 @@ df$entropy <- entropy
 # Select specified number based on highest entropy
 sorted <- df[order(-df$entropy),]
 entropy_sample <- sorted[1:52,] # set number manually
-entropy_sample <- entropy_sample[,c("id","text")]
+entropy_sample <- entropy_sample[, c("id","text")]
 
 
 #####
@@ -215,13 +253,15 @@ manifcounts <- manifcounts[order(manifcounts[,"sents_handcoded"], -manifcounts[,
 
 # Select sentences at random from 4 least-coded manifestos
 set.seed(2010)
-coverage_sample_1 <- sample_n(df[df$manifesto==manifcounts$manifesto[1]], 2) # set number manually
-coverage_sample_2 <- sample_n(df[df$manifesto==manifcounts$manifesto[2]], 2)
-coverage_sample_3 <- sample_n(df[df$manifesto==manifcounts$manifesto[3]], 2)
-coverage_sample_4 <- sample_n(df[df$manifesto==manifcounts$manifesto[4]], 2)
+coverage_sample <- c()
+for(i in 1:8)
+{
+  tmp <- sample_n(df[df$manifesto==manifcounts$manifesto[i], ], 1)
+  coverage_sample <- rbind(coverage_sample, tmp)
+}
+
 
 # Combine sentences
-coverage_sample <- rbind(coverage_sample_1,coverage_sample_2,coverage_sample_3,coverage_sample_4)
 coverage_sample <- coverage_sample[,c("id","text")]
 
 
@@ -229,4 +269,5 @@ coverage_sample <- coverage_sample[,c("id","text")]
 # 8. Combine uncertainty and undercoverage-based samples into one... export
 new_sample <- rbind(entropy_sample, coverage_sample)
 new_sample <- new_sample[-duplicated(new_sample$id),]
+new_sample <- new_sample[sample(1:nrow(new_sample)),]
 write.csv(new_sample,file="~coding_sampleXXX.csv")
