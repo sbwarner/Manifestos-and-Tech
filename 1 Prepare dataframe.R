@@ -3,47 +3,11 @@
 #
 # Part 1 - Preparing manifesto dataframe
 #
-# Last updated by Heinrich/Warner, 11-18-20
+# Last updated by Seth, 6-10-21
 ########################
 
-# -1. Load packages required for manifestoR
-install.packages("NLP")
-install.packages("tm")
-install.packages("httr")
-install.packages("jsonlite")
-install.packages("functional")
-install.packages("zoo")
-install.packages("base64enc")
-install.packages("htmlwidgets")
-install.packages("DT")
-install.packages("htmltools")
-library("NLP")
-library("tm")
-library("httr")
-library("jsonlite")
-library("functional")
-library("zoo")
-library("base64enc")
-library("htmlwidgets")
-library("DT")
-library("htmltools")
-
-# 0. Load packages
-install.packages("https://cran.r-project.org/src/contrib/Archive/manifestoR/manifestoR_1.3.0.tar.gz", repos = NULL)
-install.packages("sentimentr")
-install.packages("stringr")
-install.packages("tokenizers")
-install.packages("readxl")
-library(manifestoR)
-library(tokenizers)
-library(stringr)
-library(readxl)
-library(sentimentr)
 
 #####
-
-setwd("C:/Users/sethb/OneDrive/Penn State/Tech-induced job loss")
-#setwd("/Users/th5/Downloads/Manifestos-and-Tech-master")
 
 # 1. Collecting manifesto data
 
@@ -77,12 +41,18 @@ temp <- vector("list", length(english_corpus))
 for(i in 1:length(english_corpus))
 {
   temp[[i]]$text <- unlist(tokenize_sentences(english_corpus[[i]]$content$text))
-  temp[[i]]$id <- paste(i,1:length(temp[[i]]$content),sep="_")
-  temp[[i]]$date <- rep(english_corpus[[i]]$meta$date, length(temp[[i]]$content))
-  temp[[i]]$party <- rep(english_corpus[[i]]$meta$party, length(temp[[i]]$content))
+  temp[[i]]$id <- paste(i,1:length(temp[[i]]$text),sep="_")
+  temp[[i]]$date <- rep(english_corpus[[i]]$meta$date, length(temp[[i]]$text))
+  temp[[i]]$party <- rep(english_corpus[[i]]$meta$party, length(temp[[i]]$text))
   temp[[i]]$length <- sapply(strsplit(temp[[i]]$text, " "), length)
 }
-df <- do.call(rbind.data.frame, temp)
+df <- do.call("rbind", temp)
+df <- as.data.frame(df)
+df <- data.frame(matrix(unlist(df), ncol = ncol(df), byrow = F))
+
+names(df) <- c("text","id","date","party","length")
+
+df$length <- as.integer(df$length)
 df <- df[df$length>=5,]
 
 
@@ -91,7 +61,7 @@ df <- df[df$length>=5,]
 # 3. Merge with CMP codebook to get country and party names
 
 # import codebook
-manif.codebook <- read_excel("manifestos_reference_sheet.xlsx")
+manif.codebook <- read_excel("data/manifestos_reference_sheet.xlsx")
 
 # merge by party ID and date, dropping manifs not in our dataset
 df <- merge(df, manif.codebook, by = c("party","date"), all.y = F)
@@ -138,8 +108,8 @@ df$keyword_count <- rowSums(df[,keyword_names])
 # b. merge in V-Dem party data
 
 # import data and crosswalk
-vdem <- read.csv("~Tech-induced job loss/CPD_V-Party_CSV_v1/V-Dem-CPD-Party-V1.csv")
-crosswalk <- read.csv("~Tech-induced job loss/vdem_crosswalk.csv")
+vdem <- read.csv("V-Dem-CPD-Party-V1.csv")
+crosswalk <- read.csv("vdem_crosswalk.csv")
 
 # use party_state to match to V-DEM party codes
 df$party_state <- paste(df$partyname,df$countryname,sep = ", ")
@@ -156,7 +126,7 @@ party_data <- c("v2paanteli","v2papeople","v2paopresp","v2paplur","v2paminor","v
                 "v2pariglef","v2pawelf","v2paclient")
 
 # merge V-DEM variables into dataframe
-df <- merge(df,vdem[,party_data], by = "party_year", all.x = T)
+df <- merge(df,vdem[,c(party_data,"party_year")], by = "party_year", all.x = T)
 
 
 ###
@@ -166,9 +136,11 @@ sentiment <- sentiment(get_sentences(df$text)) # sentimentR reqs get_sentences, 
 temp <- aggregate(sentiment$sentiment, by = list(sentiment$element_id), FUN = mean) # change back to vector of df length
 df$sentiment <- temp$x
 
-
-
 #####
 
-# 5. Save dataframe
-save(df, file="~/Penn State/Tech-induced job loss/manifesto_data.RData")
+# 5a. Collect garbage
+rm(list=setdiff(ls(), c("df","keyword_names","keyword_names_0","keywords","party_data")))
+
+# 5b. Save dataset and environment
+save(df, file="data/manifesto_data.RData")
+save.image("outputs/1_output.RData")
